@@ -1,0 +1,24 @@
+[project]
+name = "typetrainer"
+version = "0.1.0"
+description = "Adaptive typing trainer — keybr-style per-key trainer for the terminal"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "textual>=8.0",
+  "plotext>=5.0",
+]
+
+[project.scripts]
+typetrainer = "typetrainer.ui.app:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

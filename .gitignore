@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+venv/
+.venv/
+env/
+
+# SQLite / app data
+*.db
+*.sqlite3
+.typetrainer/
+
+# Textual / pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Local planning notes (not for git)
+build_plan.md
