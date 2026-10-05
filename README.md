@@ -44,17 +44,18 @@ Type. It watches. It adapts. You get faster.
 
 > Requires **Python 3.11+**. Everything runs inside the existing `venv`.
 
-```powershell
-# 1 — activate the environment
-.\venv\Scripts\Activate.ps1
+```bash
+git clone https://github.com/Soroush-Eghdami/Keybr.git
 
-# 2 — install the project (editable)
+cd Keybr
+
+python -m venv venv
+
+# Windows: .\venv\Scripts\Activate.ps1   |   Linux/macOS: source venv/bin/activate
+
 pip install -e .
 
-# 3 — run it
 typetrainer
-# …or without installing:
-python -m typetrainer
 ```
 
 ### Controls
