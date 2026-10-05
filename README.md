@@ -140,6 +140,7 @@ Engine logic is tested with fake keystroke data — no manual typing required.
 - [x] **Phase 4** — letter unlocking
 - [x] **Phase 5** — heatmap keyboard, live pills, session summary
 - [ ] **Phase 6** — settings screen, TOML config, CSV export
+- [ ] **Phase 7** — full backend support for a web frontend
 - [ ] Stretch — ghost racing, code-typing mode, Dvorak/Colemak
 
 ---
