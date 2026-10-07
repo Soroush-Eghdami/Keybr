@@ -11,6 +11,7 @@ MIN_SAMPLES = 20
 @dataclass
 class Progression:
     # letters youve unlocked so far plus what counts as fast enough
+    # min_samples counts timed samples (actual EMA updates), not attempts
     unlocked: list = field(default_factory=lambda: list(STARTER_SET))
     target_delay_ms: float = TARGET_DELAY_MS
     min_samples: int = MIN_SAMPLES
@@ -29,18 +30,18 @@ class Progression:
         return None
 
     # tells if a letter is still locked, being learned, or fully mastered
-    def key_status(self, char, ema_ms, samples):
+    def key_status(self, char, ema_ms, timed_samples):
         if char not in self.unlocked:
             return "locked"
-        if samples >= self.min_samples and ema_ms <= self.target_delay_ms:
+        if timed_samples >= self.min_samples and ema_ms <= self.target_delay_ms:
             return "mastered"
         return "learning"
 
     # True only when every unlocked letter is fast enough with enough practice
     def ready_to_unlock(self, stats):
         for ch in self.unlocked:
-            ema, samples = stats.get(ch, (9999.0, 0))
-            if samples < self.min_samples or ema > self.target_delay_ms:
+            ema, timed = stats.get(ch, (9999.0, 0))
+            if timed < self.min_samples or ema > self.target_delay_ms:
                 return False
         return True
 

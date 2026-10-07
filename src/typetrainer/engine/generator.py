@@ -1,16 +1,53 @@
 # builds practice text from real words and made-up ones
+import logging
 import random
 from collections import Counter, defaultdict
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
+try:
+    from importlib.resources import files as _res_files
+except ImportError:  # python 3.8 fallback, not expected on 3.11+
+    _res_files = None
+
+# when the allowed pool is this small, real words get boring — use pseudowords
+MIN_REAL_POOL = 15
+
 # reads the word list file, falls back to a small builtin set if its missing
-def load_words(path):
-    p = Path(path)
-    if not p.exists():
+def load_words(path=None):
+    if path is not None:
+        p = Path(path)
+        if p.exists():
+            words = _read_word_file(p)
+            if words:
+                return words
+        logger.warning("word list %s missing or empty, using builtin fallback", p)
         return list(_FALLBACK_WORDS)
+    # packaged location: src/typetrainer/data/words_en.txt
+    if _res_files is not None:
+        try:
+            data = _res_files("typetrainer.data").joinpath("words_en.txt").read_text(encoding="utf-8")
+            words = [w.strip().lower() for w in data.splitlines()]
+            words = [w for w in words if w.isalpha() and len(w) >= 2]
+            if words:
+                return words
+        except (FileNotFoundError, ModuleNotFoundError) as exc:
+            logger.warning("packaged word list missing (%s), using builtin fallback", exc)
+            return list(_FALLBACK_WORDS)
+    # legacy repo-root location (pre-5.5 layouts)
+    legacy = Path(__file__).resolve().parents[3] / "data" / "words_en.txt"
+    if legacy.exists():
+        words = _read_word_file(legacy)
+        if words:
+            return words
+    logger.warning("no word list found, using builtin fallback")
+    return list(_FALLBACK_WORDS)
+
+
+def _read_word_file(p):
     words = [w.strip().lower() for w in p.read_text(encoding="utf-8").splitlines()]
-    words = [w for w in words if w.isalpha() and len(w) >= 2]
-    return words or list(_FALLBACK_WORDS)
+    return [w for w in words if w.isalpha() and len(w) >= 2]
 
 # scores a word higher the more of your slow letters it contains
 def word_weight(word, slow_keys, boost=3.0):
@@ -70,15 +107,21 @@ def generate_pseudoword(table, n=2, target_keys=None, allowed=None, max_len=8, r
     return word[:max_len]
 
 # mixes real words with some fake ones into one practice line
+# never returns a locked letter: the real-word pool is filtered by allowed,
+# and pseudowords are generated under the same constraint
 def generate_line(words, table=None, slow_keys=None, allowed=None, word_count=12, use_pseudo_ratio=0.35, rng=None):
     rng = rng or random.Random()
     slow_keys = slow_keys or set()
     pool = [w for w in words if allowed is None or all(c in allowed for c in w)]
-    if not pool:
-        pool = words
     n_pseudo = round(word_count * use_pseudo_ratio) if table else 0
     n_real = word_count - n_pseudo
-    real = pick_weighted_words(pool, slow_keys, n_real, rng) if n_real else []
+    if allowed is not None and table and 0 < len(pool) < MIN_REAL_POOL:
+        # tiny pool (early unlock stages): mostly pseudowords, keep 2 real max
+        n_real = min(n_real, 2)
+        n_pseudo = word_count - n_real
+    if not pool:
+        n_real, n_pseudo = 0, word_count if table else 0
+    real = pick_weighted_words(pool, slow_keys, n_real, rng) if n_real and pool else []
     pseudo = []
     if table and n_pseudo:
         tries = 0
@@ -89,7 +132,11 @@ def generate_line(words, table=None, slow_keys=None, allowed=None, word_count=12
                 pseudo.append(w)
     mixed = real + pseudo
     rng.shuffle(mixed)
-    return " ".join(mixed) if mixed else " ".join(rng.choices(pool, k=word_count))
+    if mixed:
+        return " ".join(mixed)
+    if pool:
+        return " ".join(rng.choices(pool, k=word_count))
+    return ""
 
 
 _FALLBACK_WORDS = (

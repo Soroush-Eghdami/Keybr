@@ -1,0 +1,26 @@
+[
+  {
+    "name": "clean line",
+    "target": "hi there",
+    "events": [
+      {"key": "h", "delay_ms": null},
+      {"key": "i", "delay_ms": 180},
+      {"key": " ", "delay_ms": 150},
+      {"key": "t", "delay_ms": 200},
+      {"key": "h", "delay_ms": 170},
+      {"key": "e", "delay_ms": 190},
+      {"key": "r", "delay_ms": 210},
+      {"key": "e", "delay_ms": 160}
+    ]
+  },
+  {
+    "name": "with error and backspace",
+    "target": "hi",
+    "events": [
+      {"key": "h", "delay_ms": null},
+      {"key": "x", "delay_ms": 200},
+      {"key": "Backspace", "delay_ms": 300},
+      {"key": "i", "delay_ms": 500}
+    ]
+  }
+]
