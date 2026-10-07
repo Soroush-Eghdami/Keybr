@@ -1,10 +1,11 @@
 # the actual terminal app, wires the engine + sqlite + screen together
+import logging
 import random
-from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.containers import Center, Horizontal, Vertical
 from textual.widgets import Footer, Static
 from textual import events
+from ..config import load_settings
 from ..engine.generator import build_ngram_table, generate_line, load_words
 from ..engine.metrics import calc_accuracy
 from ..engine.session import Session
@@ -13,6 +14,8 @@ from ..engine.progression import Progression
 from ..storage.db import get_connection, get_meta, set_meta
 from ..storage.repository import load_key_stats, recent_sessions, save_session, upsert_key_stats
 from .widgets import KeyboardHeatmap, StatPill, TypingDisplay
+
+logger = logging.getLogger(__name__)
 
 APP_CSS = """
 Screen {
@@ -85,27 +88,32 @@ Footer {
 }
 """
 
-DATA_WORDS = Path(__file__).resolve().parents[3] / "data" / "words_en.txt"
-
 
 class TrainerApp(App):
     CSS = APP_CSS
     TITLE = "keybr — adaptive typing trainer"
 
+    # single owner for shortcuts: BINDINGS (footer labels + actions).
+    # on_key only handles printable typing + backspace, never these keys.
     BINDINGS = [
-        ("tab", "restart", "restart"),
-        ("ctrl+s", "toggle_stats", "stats"),
+        ("tab", "restart", "new line"),
         ("ctrl+r", "restart", "restart"),
+        ("ctrl+s", "toggle_stats", "stats"),
+        ("ctrl+o", "toggle_settings", "settings"),
     ]
 
-    def __init__(self, words_file=None, db_path=None):
+    def __init__(self, words_file=None, db_path=None, settings=None):
         super().__init__()
-        self.words = load_words(words_file or DATA_WORDS)
+        self.settings = settings or load_settings()
+        self.words = load_words(words_file)
         self.table = build_ngram_table(self.words, n=2)
         self.conn = get_connection(db_path)
-        self.tracker = StatsTracker()
+        self.tracker = StatsTracker(alpha=self.settings.alpha)
         self.tracker.load_rows(load_key_stats(self.conn))
-        self.progression = Progression()
+        self.progression = Progression(
+            target_delay_ms=self.settings.target_delay_ms,
+            min_samples=self.settings.min_samples,
+        )
         saved = get_meta(self.conn, "unlocked", "")
         if saved:
             chars = [c for c in saved.split(",") if c.isalpha()]
@@ -114,6 +122,7 @@ class TrainerApp(App):
         self.rng = random.Random()
         self.session = Session("")
         self.showing_stats = False
+        self.showing_settings = False
 
     # lays out the top bar, typing card and keyboard
     def compose(self) -> ComposeResult:
@@ -141,14 +150,21 @@ class TrainerApp(App):
 
     # your worst letters, only counting ones youve actually typed a bit
     def _slow_keys(self, n=6):
-        return {s.char for s in self.tracker.slowest_keys(n) if s.samples >= 3}
+        cands = [s for s in self.tracker.slowest_keys(n * 2) if s.timed_samples >= 3]
+        return {s.char for s in cands[:n]}
 
     # deals a fresh line biased toward your slow letters and resets the round
-    def new_round(self, word_count=12):
+    def new_round(self, word_count=None):
         slow = self._slow_keys()
-        target = generate_line(self.words, self.table, slow_keys=slow, word_count=word_count, rng=self.rng)
+        target = generate_line(
+            self.words, self.table, slow_keys=slow,
+            allowed=self.progression.allowed,
+            word_count=word_count or self.settings.words_per_test,
+            rng=self.rng,
+        )
         self.session = Session(target)
         self.showing_stats = False
+        self.showing_settings = False
         typing = self.query_one("#typing", TypingDisplay)
         typing.target = target
         typing.typed_ok = ()
@@ -156,7 +172,9 @@ class TrainerApp(App):
         self._paint_keyboard()
         self.query_one("#hint", Static).update("start typing — timer begins on your first keystroke")
 
-    # handles every keypress: typing, backspace, restart and stats shortcuts
+    # BINDINGS show the shortcuts in the footer; on_key owns them so Tab
+    # never falls through to focus navigation. prevent_default() stops the
+    # matching action from double-firing.
     async def on_key(self, event: events.Key):
         if event.key in ("tab", "ctrl+r"):
             event.prevent_default()
@@ -166,8 +184,13 @@ class TrainerApp(App):
             event.prevent_default()
             self.toggle_stats_view()
             return
-        if self.showing_stats:
+        if event.key == "ctrl+o":
+            event.prevent_default()
+            self.toggle_settings_view()
+            return
+        if self.showing_stats or self.showing_settings:
             if event.key in ("enter", "space", "escape"):
+                event.prevent_default()
                 self.new_round()
             return
         if event.key == "backspace":
@@ -188,14 +211,14 @@ class TrainerApp(App):
     # repaints the typed colors and moves the blue next-key highlight
     def _sync_typing(self):
         typing = self.query_one("#typing", TypingDisplay)
-        typing.typed_ok = tuple(self.session.errors)
+        typing.typed_ok = tuple(self.session.correct_flags)
         typing.cursor = self.session.position
         nxt = self.session.target[self.session.position] if not self.session.finished else ""
         self.query_one("#keyboard", KeyboardHeatmap).next_key = nxt.lower()
 
     # refreshes the WPM / ACC / TIME pills 10x a second while you type
     def _refresh_live(self):
-        if self.showing_stats or not self.session.started:
+        if self.showing_stats or self.showing_settings or not self.session.started:
             return
         wpm = self.session.live_wpm()
         total = len(self.session.keystrokes)
@@ -205,20 +228,19 @@ class TrainerApp(App):
             self.query_one("#pill-acc", StatPill).update(f"{calc_accuracy(correct, total):.0f}%")
             self.query_one("#pill-time", StatPill).update(f"{self.session.elapsed:.0f}s")
         except Exception:
-            pass
+            logger.exception("live pill refresh failed")
 
     # saves the round, updates your key averages and maybe unlocks a letter
     def finish_round(self):
         res = self.session.result()
         for k in self.session.keystrokes:
-            if k.expected != " ":
-                self.tracker.record(k.expected, k.delay_ms, k.correct)
+            self.tracker.record(k.expected, k.delay_ms, k.correct)
         upsert_key_stats(self.conn, list(self.tracker.stats.values()))
         try:
             save_session(self.conn, res, self.session.keystrokes)
         except Exception:
-            pass
-        stat_map = {c: (s.ema_delay_ms, s.samples) for c, s in self.tracker.stats.items()}
+            logger.exception("save_session failed")
+        stat_map = {c: (s.ema_delay_ms, s.timed_samples) for c, s in self.tracker.stats.items()}
         unlocked = self.progression.maybe_unlock(stat_map)
         if unlocked:
             set_meta(self.conn, "unlocked", ",".join(self.progression.unlocked))
@@ -232,17 +254,20 @@ class TrainerApp(App):
         kb.next_key = self.session.target[0].lower() if self.session.target else ""
 
     # end-of-round report with wpm, worst keys and the recent-history sparkline
+    # key lists are restricted to unlocked letters: legacy stats for locked
+    # letters can never be re-sampled, so unfiltered they'd top the lists forever
     def show_summary(self, res, just_unlocked=None):
         self.showing_stats = True
-        slow = self.tracker.slowest_keys(5)
-        bad = self.tracker.error_prone_keys(5)
+        allowed = self.progression.allowed
+        slow = self.tracker.slowest_keys(5, allowed=allowed)
+        bad = self.tracker.error_prone_keys(5, allowed=allowed)
         hist = recent_sessions(self.conn, 8)
         spark = _sparkline([h[2] for h in reversed(hist)]) if hist else "—"
 
         def fmt(keys):
             if not keys:
                 return "  (type more to build stats)"
-            return "\n".join(f"   [bold]{s.char}[/]  {s.ema_delay_ms:4.0f}ms   err {s.error_rate*100:4.1f}%  n={s.samples}" for s in keys)
+            return "\n".join(f"   [bold]{s.char}[/]  {s.ema_delay_ms:4.0f}ms   err {s.error_rate*100:4.1f}%  n={s.timed_samples}" for s in keys)
 
         unlock_msg = f"\n🔓 [bold green]NEW LETTER UNLOCKED: {just_unlocked}[/]" if just_unlocked else ""
         self.query_one("#hint", Static).update(
@@ -254,17 +279,42 @@ class TrainerApp(App):
         )
 
     # flips between the typing line and your full key stats overlay
+    # only unlocked letters are listed, so the view follows unlocks instead
+    # of being buried under frozen legacy stats for locked letters
     def toggle_stats_view(self):
+        self.showing_settings = False
         self.showing_stats = not self.showing_stats
         hint = self.query_one("#hint", Static)
         if self.showing_stats:
+            allowed = self.progression.allowed
+            keys = self.tracker.slowest_keys(10, allowed=allowed)
             lines = ["[bold cyan]⌨ your keys[/]  (green=fast red=slow)"]
-            for s in self.tracker.slowest_keys(8):
-                st = self.progression.key_status(s.char, s.ema_delay_ms, s.samples)
+            for s in keys:
+                st = self.progression.key_status(s.char, s.ema_delay_ms, s.timed_samples)
                 lines.append(f"  [bold]{s.char}[/] {s.ema_delay_ms:4.0f}ms  err {s.error_rate*100:4.1f}%  {st}")
+            if len(allowed) > len(keys):
+                lines.append(f"  [dim]({len(allowed) - len(keys)} unlocked with no data yet — type more)[/]")
             lines.append(f"\nunlocked: {''.join(self.progression.unlocked)}   next: {self.progression.next_locked or '— all done!'}")
             lines.append("\n[dim]press ctrl+s or tab to go back[/]")
             hint.update("\n".join(lines))
+        else:
+            self._sync_typing()
+            hint.update("start typing — timer begins on your first keystroke")
+
+    def toggle_settings_view(self):
+        self.showing_stats = False
+        self.showing_settings = not self.showing_settings
+        hint = self.query_one("#hint", Static)
+        if self.showing_settings:
+            s = self.settings
+            hint.update(
+                "[bold cyan]⚙ settings[/]  (edit ~/.typetrainer/config.toml)\n"
+                f"  words_per_test  {s.words_per_test}\n"
+                f"  target_delay_ms {s.target_delay_ms}\n"
+                f"  min_samples     {s.min_samples}\n"
+                f"  alpha           {s.alpha}\n"
+                "\n[dim]press ctrl+o or tab to go back[/]"
+            )
         else:
             self._sync_typing()
             hint.update("start typing — timer begins on your first keystroke")
@@ -276,6 +326,9 @@ class TrainerApp(App):
     # ctrl+s shortcut: same as the stats toggle
     def action_toggle_stats(self):
         self.toggle_stats_view()
+
+    def action_toggle_settings(self):
+        self.toggle_settings_view()
 
 # turns a list of wpm numbers into a tiny ▁▂▃ bar chart
 def _sparkline(values):
@@ -289,6 +342,8 @@ def _sparkline(values):
 
 # launches the app when you run typetrainer
 def main():
+    import logging as _logging
+    _logging.basicConfig(level=_logging.WARNING)
     TrainerApp().run()
 
 

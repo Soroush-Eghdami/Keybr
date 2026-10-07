@@ -66,7 +66,21 @@ typetrainer
 | `backspace` | fix a mistake |
 | `tab` / `ctrl+r` | fresh line |
 | `ctrl+s` | stats overlay (slowest keys, unlock progress) |
+| `ctrl+o` | settings overlay (words per test, target speed, alpha) |
 | `ctrl+q` | quit |
+
+### Settings
+
+Tweak `~/.typetrainer/config.toml` (created on first run if missing):
+
+```toml
+words_per_test = 12
+target_delay_ms = 340.0
+min_samples = 20
+alpha = 0.2
+```
+
+Press `ctrl+o` inside the app to view the current values.
 
 ---
 
@@ -92,12 +106,13 @@ typetrainer
 
 | Module | Job |
 |--------|-----|
-| `engine/session.py` | state machine — timer starts on first keystroke |
+| `engine/session.py` | state machine — timer starts on first keystroke; `replay()` replays event lists on a synthetic clock |
 | `engine/metrics.py` | `WPM = (chars/5)/min`, accuracy = correct/total |
-| `engine/stats.py` | per-key EMA speed + error rate |
-| `engine/generator.py` | Markov (n-gram) pseudo-words biased to weak keys |
-| `engine/progression.py` | keybr-style letter unlocking |
-| `storage/` | SQLite: sessions, keystrokes, key stats |
+| `engine/stats.py` | per-key EMA speed (correct + timed only) + attempts/errors |
+| `engine/generator.py` | Markov (n-gram) pseudo-words biased to weak keys, gated to unlocked letters |
+| `engine/progression.py` | keybr-style letter unlocking on timed samples |
+| `storage/` | SQLite: sessions, keystrokes, key stats (auto-migrates pre-5.5 DBs) |
+| `config.py` | TOML settings at `~/.typetrainer/config.toml` |
 | `ui/` | Textual TUI — **the only place Textual is imported** |
 
 > **Design rule:** `engine/` never imports the UI. Swap Textual for a GUI or web frontend later without touching a line of logic.
@@ -108,13 +123,15 @@ typetrainer
 
 ```
 keybr/
-├── data/words_en.txt            # 349-word training corpus
 ├── src/typetrainer/
+│   ├── data/words_en.txt          # ~3000-word training corpus (see data/NOTICE.md)
 │   ├── engine/                  # pure logic (session, metrics, stats,
 │   │                            #          generator, progression)
 │   ├── storage/                 # sqlite connection + repository
+│   ├── config.py                # TOML settings
 │   └── ui/                      # Textual app + widgets (theme lives here)
 ├── tests/                       # pytest — engine only, no UI
+│   └── fixtures/sessions.json   # shared replay fixtures (also for future JS test)
 ├── pyproject.toml
 └── README.md
 ```
@@ -125,7 +142,7 @@ keybr/
 
 ```powershell
 pytest -q
-# 10 passed
+# 31 passed
 ```
 
 Engine logic is tested with fake keystroke data — no manual typing required.
@@ -140,9 +157,9 @@ Engine logic is tested with fake keystroke data — no manual typing required.
 - [x] **Phase 3** — smart generator (weighted words + n-grams)
 - [x] **Phase 4** — letter unlocking
 - [x] **Phase 5** — heatmap keyboard, live pills, session summary
-- [ ] **Phase 6** — settings screen, TOML config, CSV export
-- [ ] **Phase 7** — full backend support for a web frontend
-- [ ] Stretch — ghost racing, code-typing mode, Dvorak/Colemak
+- [x] **Phase 5.5** — engine hardening (locked stats rules, `replay()`, gating, packaging)
+- [x] **Phase 6** — settings screen, TOML config, packaging (`pip install .` works, `typetrainer` command)
+- [ ] **Part II D0→D4** — Django web migration (see `build_plan.md` Part II)
 
 ---
 
